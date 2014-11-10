@@ -1,0 +1,9 @@
+[Unit]
+Description=graphite carbon relay C implementation
+
+[Service]
+User=carbon-c-relay
+ExecStart=/usr/bin/carbon-c-relay -f /etc/carbon-c-relay.conf
+
+[Install]
+WantedBy=multi-user.target

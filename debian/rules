@@ -1,0 +1,8 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@ --with systemd
+
+override_dh_auto_install:
+	cp relay carbon-c-relay
+	dh_auto_install

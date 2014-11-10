@@ -1,0 +1,22 @@
+Source: carbon-c-relay
+Section: net
+Priority: optional
+Maintainer: Filippo Giunchedi <filippo@wikimedia.org>
+Build-Depends: debhelper (>= 9), dh-systemd, libssl-dev, pkg-config
+Standards-Version: 3.9.6
+X-Python-Version: >= 2.7
+
+Package: carbon-c-relay
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, adduser
+Description: Carbon-compatible graphite line mode relay
+ This project provides a multithreaded relay which can address multiple targets
+ and clusters for each and every metric based on pattern matches.
+ .
+ Consistent-hash routing compatible with the original carbon's implementation
+ is also provided. This relay also supports aggregation, failover of backend
+ servers and more.
+ .
+ Carbon is graphite's default storage backend and supports different protocols
+ for receiving metrics, this project aims to be a replacement of graphite's
+ original carbon-relay component and supports "plaintext" protocol metrics.

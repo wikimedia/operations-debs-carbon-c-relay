@@ -1,0 +1,3 @@
+version=3
+
+https://github.com/grobian/carbon-c-relay/releases/ /grobian/carbon-c-relay/archive/v(\d\.\d+).tar.gz

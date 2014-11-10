@@ -1,0 +1,4 @@
+# the package is shipping only upstart and systemd scripts, however the init
+# script is mentioned in postinst
+carbon-c-relay: init.d-script-not-included-in-package etc/init.d/carbon-c-relay
+carbon-c-relay: init.d-script-not-marked-as-conffile etc/init.d/carbon-c-relay
