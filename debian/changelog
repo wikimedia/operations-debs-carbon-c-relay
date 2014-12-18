@@ -1,3 +1,11 @@
+carbon-c-relay (0.36+git20141218-1) unstable; urgency=medium
+
+  * Import new upstream version from git 1acdff3
+    + udp listener support
+    + misc bug fixes
+
+ -- Filippo Giunchedi <filippo@wikimedia.org>  Thu, 18 Dec 2014 10:24:40 +0000
+
 carbon-c-relay (0.36-1) unstable; urgency=medium
 
   * Initial release. (Closes: #768983)
