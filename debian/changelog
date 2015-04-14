@@ -1,3 +1,9 @@
+carbon-c-relay (0.39-1) unstable; urgency=low
+
+  * New upstream version
+
+ -- Filippo Giunchedi <filippo@wikimedia.org>  Tue, 14 Apr 2015 15:04:36 +0100
+
 carbon-c-relay (0.36+git20141218-1) unstable; urgency=medium
 
   * Import new upstream version from git 1acdff3
