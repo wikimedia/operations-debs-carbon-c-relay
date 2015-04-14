@@ -447,12 +447,6 @@ main(int argc, char * const argv[])
 			return -1;
 		}
 	}
-	for (ch = 0; ch < dgram_socklen; ch++) {
-		if (dispatch_addlistener_udp(dgram_sock[ch]) != 0) {
-			fprintf(stderr, "failed to listen to datagram socket\n");
-			return -1;
-		}
-	}
 	if ((workers[0] = dispatch_new_listener()) == NULL)
 		logerr("failed to add listener\n");
 
