@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2014 Fabian Groffen
+ * Copyright 2013-2015 Fabian Groffen
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <openssl/md5.h>
+#include <assert.h>
 
 #include "server.h"
 
@@ -33,6 +34,7 @@
 
 typedef struct _ring_entry {
 	unsigned short pos;
+	unsigned char malloced:1;
 	server *server;
 	struct _ring_entry *next;
 } ch_ring_entry;
@@ -102,7 +104,9 @@ ch_new(ch_type type)
  * Computes the hash positions for the server name given.  This is based
  * on the hashpos function.  The server name usually is the IPv4
  * address.  The port component is just stored and not used in the
- * carbon hash calculation.  Returns an updated ring.
+ * carbon hash calculation in case of carbon_ch.  The instance component
+ * is used in the hash calculation of carbon_ch, it is ignored for
+ * fnv1a_ch.  Returns an updated ring.
  */
 ch_ring *
 ch_addnode(ch_ring *ring, server *s)
@@ -122,9 +126,15 @@ ch_addnode(ch_ring *ring, server *s)
 	switch (ring->type) {
 		case CARBON:
 			for (i = 0; i < ring->hash_replicas; i++) {
+				char *instance = server_instance(s);
 				/* this format is actually Python's tuple format that is
 				 * used in serialised form as input for the hash */
-				snprintf(buf, sizeof(buf), "('%s', None):%d", server_ip(s), i);
+				snprintf(buf, sizeof(buf), "('%s', %s%s%s):%d",
+						server_ip(s),
+						instance == NULL ? "" : "'",
+						instance == NULL ? "None" : instance,
+						instance == NULL ? "" : "'",
+						i);
 				/* TODO:
 				 * https://github.com/graphite-project/carbon/commit/024f9e67ca47619438951c59154c0dec0b0518c7
 				 * Question is how harmful the collision is -- it will probably
@@ -132,6 +142,7 @@ ch_addnode(ch_ring *ring, server *s)
 				entries[i].pos = carbon_hashpos(buf, buf + strlen(buf));
 				entries[i].server = s;
 				entries[i].next = NULL;
+				entries[i].malloced = 0;
 			}
 			break;
 		case FNV1a:
@@ -144,12 +155,14 @@ ch_addnode(ch_ring *ring, server *s)
 				entries[i].pos = fnv1a_hashpos(buf, buf + strlen(buf));
 				entries[i].server = s;
 				entries[i].next = NULL;
+				entries[i].malloced = 0;
 			}
 			break;
 	}
 
 	/* sort to allow merge joins later down the road */
 	qsort(entries, ring->hash_replicas, sizeof(ch_ring_entry), *entrycmp);
+	entries[0].malloced = 1;
 
 	if (ring->entries == NULL) {
 		for (i = 1; i < ring->hash_replicas; i++)
@@ -160,6 +173,7 @@ ch_addnode(ch_ring *ring, server *s)
 		ch_ring_entry *w, *last;
 		i = 0;
 		last = NULL;
+		assert(ring->hash_replicas > 0);
 		for (w = ring->entries; w != NULL && i < ring->hash_replicas; ) {
 			if (w->pos < entries[i].pos) {
 				last = w;
@@ -215,6 +229,8 @@ ch_get_nodes(
 			break;
 	}
 
+	assert(ring->entries);
+
 	/* implement behaviour of Python's bisect_left on the ring (used in
 	 * carbon hash source), one day we might want to implement it as
 	 * real binary search iso forward pointer chasing */
@@ -238,4 +254,36 @@ ch_get_nodes(
 		ret[i].dest = w->server;
 		ret[i].metric = strdup(metric);
 	}
+}
+
+/**
+ * Frees the ring structure and its added nodes.
+ */
+void
+ch_free(ch_ring *ring)
+{
+	ch_ring_entry *deletes = NULL;
+	ch_ring_entry *w = NULL;
+
+	for (; ring->entries != NULL; ring->entries = ring->entries->next) {
+		server_shutdown(ring->entries->server);
+
+		if (ring->entries->malloced) {
+			if (deletes == NULL) {
+				w = deletes = ring->entries;
+			} else {
+				w = w->next = ring->entries;
+			}
+		}
+	}
+
+	assert(w != NULL);
+	w->next = NULL;
+	while (deletes != NULL) {
+		w = deletes->next;
+		free(deletes);
+		deletes = w;
+	}
+
+	free(ring);
 }

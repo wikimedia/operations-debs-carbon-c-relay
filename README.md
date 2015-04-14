@@ -49,7 +49,7 @@ The route file syntax is as follows:
 # comments are allowed in any place and start with a hash (#)
 
 cluster <name>
-    <forward | any_of | <carbon_ch | fnv1a_ch> [replication <count>]>
+    <forward | any_of [useall] | failover | <carbon_ch | fnv1a_ch> [replication <count>]>
         <host[:port] [proto <udp | tcp>]> ...
     ;
 match <* | <expression>>
@@ -86,15 +86,25 @@ is not much useful in itself, but since any of the members can receive
 each metric, this means that when one of the members is unreachable, the
 other members will receive all of the metrics.  This can be useful when
 the cluster points to other relays.  The `any_of` router tries to send
-the same metrics to the same destination.  The `carbon_ch` cluster sends
-the metrics to the member that is responsible according to the
-consistent hash algorithm (as used in the original carbon), or multiple
-members if replication is set to more than 1.  The `fnv1a_ch` cluster is
-a identical in behaviour to `carbon_ch`, but it uses a different hash
-technique (FNV1a) which is faster but more importantly defined to get by
-a limitation of `carbon_ch` to use both host and port from the members.
-This is useful when multiple targets live on the same host just separated
-by port.
+the same metrics consistently to the same destination.  The `failover`
+cluster is like the `any_of` cluster, but sticks to the order in which
+servers are defined.  This is to implement a pure failover scenario
+between servers.  The `carbon_ch` cluster sends the metrics to the
+member that is responsible according to the consistent hash algorithm
+(as used in the original carbon), or multiple members if replication is
+set to more than 1.  The `fnv1a_ch` cluster is a identical in behaviour
+to `carbon_ch`, but it uses a different hash technique (FNV1a) which is
+faster but more importantly defined to get by a limitation of
+`carbon_ch` to use both host and port from the members.  This is useful
+when multiple targets live on the same host just separated by port.  The
+instance that original carbon uses to get around this can be set by
+appending it after the port, separated by an equals sign, e.g.
+`127.0.0.1:2006=a` for instance `a`.
+
+DNS hostnames are resolved to a single address, according to the preference
+rules in [RFC 3484](https://www.ietf.org/rfc/rfc3484.txt).  The `any_of`
+cluster has an explicit `usedns` flag that enables a hostname to resolve to
+multiple addresses.  Each address returned becomes a cluster destination.
 
 Match rules are the way to direct incoming metrics to one or more
 clusters.  Match rules are processed top to bottom as they are defined
@@ -190,9 +200,9 @@ different from the two consistent hash cluster types:
 
     cluster graphite
         carbon_ch
-            10.1.0.1
-            10.1.0.2
-            10.1.0.3
+            127.0.0.1:2006=a
+            127.0.0.1:2007=b
+            127.0.0.1:2008=c
         ;
 
 If a member in this example fails, all metrics that would go to that
@@ -202,8 +212,8 @@ metric ends up on the same server always.  The `carbon_ch` cluster type
 is compatible with carbon-relay consistent hash, and can be used for
 existing clusters populated by carbon-relay.  For new clusters, however,
 it is better to use the `fnv1a_ch` cluster type, for it is faster, and
-allows to balance over the same address but different ports, unlike
-`carbon_ch`.
+allows to balance over the same address but different ports without an
+instance number, unlike `carbon_ch`.
 
 Because we can use multiple clusters, we can also replicate without the
 use of the `forward` cluster type, in a more intelligent way:

@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2014 Fabian Groffen
+ * Copyright 2013-2015 Fabian Groffen
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,5 +35,6 @@ void ch_get_nodes(
 		const char replcnt,
 		const char *metric,
 		const char *firstspace);
+void ch_free(ch_ring *ring);
 
 #endif
