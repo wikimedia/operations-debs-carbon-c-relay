@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2014 Fabian Groffen
+ * Copyright 2013-2015 Fabian Groffen
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,18 +20,21 @@
 #include <string.h>
 #include <time.h>
 #include <pthread.h>
+#include <assert.h>
 
 #include "relay.h"
 #include "dispatcher.h"
 #include "server.h"
 #include "aggregator.h"
+#include "collector.h"
 
 static dispatcher **dispatchers;
-static server **servers;
 static char debug = 0;
 static pthread_t collectorid;
 static char keep_running = 1;
 int collector_interval = 60;
+static char cluster_refresh_pending = 0;
+static cluster *pending_clusters = NULL;
 
 /**
  * Collects metrics from dispatchers and servers and emits them.
@@ -43,10 +46,12 @@ collector_runner(void *s)
 	size_t totticks;
 	size_t totmetrics;
 	size_t totqueued;
+	size_t totstalls;
 	size_t totdropped;
 	size_t ticks;
 	size_t metrics;
 	size_t queued;
+	size_t stalls;
 	size_t dropped;
 	size_t dispatchers_idle;
 	size_t dispatchers_busy;
@@ -56,6 +61,7 @@ collector_runner(void *s)
 	char *p;
 	size_t numaggregators = aggregator_numaggregators();
 	server *submission = (server *)s;
+	server **srvs = NULL;
 	char metric[METRIC_BUFSIZ];
 	char *m;
 	size_t sizem = 0;
@@ -71,12 +77,20 @@ collector_runner(void *s)
 
 #define send(metric) \
 	if (debug) \
-		fprintf(stdout, "%s", metric); \
+		logout("%s", metric); \
 	else \
 		server_send(submission, strdup(metric), 1);
 
 	nextcycle = time(NULL) + collector_interval;
 	while (keep_running) {
+		if (cluster_refresh_pending) {
+			server **newservers = router_getservers(pending_clusters);
+			if (srvs != NULL)
+				free(srvs);
+			srvs = newservers;
+			cluster_refresh_pending = 0;
+		}
+		assert(srvs != NULL);
 		sleep(1);
 		now = time(NULL);
 		if (nextcycle > now)
@@ -117,47 +131,55 @@ collector_runner(void *s)
 		totticks = 0;
 		totmetrics = 0;
 		totqueued = 0;
+		totstalls = 0;
 		totdropped = 0;
-		for (i = 0; servers[i] != NULL; i++) {
-			totticks += ticks = server_get_ticks(servers[i]);
-			totmetrics += metrics = server_get_metrics(servers[i]);
-			totqueued += queued = server_get_queue_len(servers[i]);
-			totdropped += dropped = server_get_dropped(servers[i]);
-			snprintf(ipbuf, sizeof(ipbuf), "%s", server_ip(servers[i]));
-			for (p = ipbuf; *p != '\0'; p++)
-				if (*p == '.')
-					*p = '_';
-			snprintf(m, sizem, "destinations.%s:%u.sent %zd %zd\n",
-					ipbuf, server_port(servers[i]), metrics, (size_t)now);
+		for (i = 0; srvs[i] != NULL; i++) {
+			if (server_ctype(srvs[i]) == CON_PIPE) {
+				strncpy(ipbuf, "internal", sizeof(ipbuf));
+
+				ticks = server_get_ticks(srvs[i]);
+				metrics = server_get_metrics(srvs[i]);
+				queued = server_get_queue_len(srvs[i]);
+				stalls = server_get_stalls(srvs[i]);
+				dropped = server_get_dropped(srvs[i]);
+			} else {
+				snprintf(ipbuf, sizeof(ipbuf), "%s:%u",
+						server_ip(srvs[i]), server_port(srvs[i]));
+				for (p = ipbuf; *p != '\0'; p++)
+					if (*p == '.')
+						*p = '_';
+
+				totticks += ticks = server_get_ticks(srvs[i]);
+				totmetrics += metrics = server_get_metrics(srvs[i]);
+				totqueued += queued = server_get_queue_len(srvs[i]);
+				totstalls += stalls = server_get_stalls(srvs[i]);
+				totdropped += dropped = server_get_dropped(srvs[i]);
+			}
+			snprintf(m, sizem, "destinations.%s.sent %zd %zd\n",
+					ipbuf, metrics, (size_t)now);
 			send(metric);
-			snprintf(m, sizem, "destinations.%s:%u.queued %zd %zd\n",
-					ipbuf, server_port(servers[i]), queued, (size_t)now);
+			snprintf(m, sizem, "destinations.%s.queued %zd %zd\n",
+					ipbuf, queued, (size_t)now);
 			send(metric);
-			snprintf(m, sizem, "destinations.%s:%u.dropped %zd %zd\n",
-					ipbuf, server_port(servers[i]), dropped, (size_t)now);
+			snprintf(m, sizem, "destinations.%s.stalls %zd %zd\n",
+					ipbuf, stalls, (size_t)now);
 			send(metric);
-			snprintf(m, sizem, "destinations.%s:%u.wallTime_us %zd %zd\n",
-					ipbuf, server_port(servers[i]), ticks, (size_t)now);
+			snprintf(m, sizem, "destinations.%s.dropped %zd %zd\n",
+					ipbuf, dropped, (size_t)now);
+			send(metric);
+			snprintf(m, sizem, "destinations.%s.wallTime_us %zd %zd\n",
+					ipbuf, ticks, (size_t)now);
 			send(metric);
 		}
-		snprintf(m, sizem, "destinations.internal.sent %zd %zd\n",
-				server_get_metrics(submission), (size_t)now);
-		send(metric);
-		snprintf(m, sizem, "destinations.internal.queued %zd %zd\n",
-				server_get_queue_len(submission), (size_t)now);
-		send(metric);
-		snprintf(m, sizem, "destinations.internal.dropped %zd %zd\n",
-				server_get_dropped(submission), (size_t)now);
-		send(metric);
-		snprintf(m, sizem, "destinations.internal.wallTime_us %zd %zd\n",
-				server_get_ticks(submission), (size_t)now);
-		send(metric);
 
 		snprintf(m, sizem, "metricsSent %zd %zd\n",
 				totmetrics, (size_t)now);
 		send(metric);
 		snprintf(m, sizem, "metricsQueued %zd %zd\n",
 				totqueued, (size_t)now);
+		send(metric);
+		snprintf(m, sizem, "metricStalls %zd %zd\n",
+				totstalls, (size_t)now);
 		send(metric);
 		snprintf(m, sizem, "metricsDropped %zd %zd\n",
 				totdropped, (size_t)now);
@@ -184,8 +206,6 @@ collector_runner(void *s)
 			send(metric);
 		}
 
-		i = 0;
-
 		if (debug)
 			fflush(stdout);
 	}
@@ -204,40 +224,40 @@ collector_writer(void *unused)
 	int i = 0;
 	size_t queued;
 	size_t totdropped;
-	char nowbuf[24];
 	size_t numaggregators = aggregator_numaggregators();
+	server **srvs = NULL;
 
 	while (keep_running) {
+		if (cluster_refresh_pending) {
+			server **newservers = router_getservers(pending_clusters);
+			if (srvs != NULL)
+				free(srvs);
+			srvs = newservers;
+			cluster_refresh_pending = 0;
+		}
+		assert(srvs != NULL);
 		sleep(1);
 		i++;
 		if (i < collector_interval)
 			continue;
 		totdropped = 0;
-		for (i = 0; servers[i] != NULL; i++) {
-			queued = server_get_queue_len(servers[i]);
-			totdropped += server_get_dropped(servers[i]);
+		for (i = 0; srvs[i] != NULL; i++) {
+			queued = server_get_queue_len(srvs[i]);
+			totdropped += server_get_dropped(srvs[i]);
 
-			if (queued > 150) {
-				fprintf(stdout, "[%s] warning: metrics queuing up "
+			if (queued > 150)
+				logout("warning: metrics queuing up "
 						"for %s:%u: %zd metrics\n",
-						fmtnow(nowbuf),
-						server_ip(servers[i]), server_port(servers[i]), queued);
-				fflush(stdout);
-			}
+						server_ip(srvs[i]), server_port(srvs[i]), queued);
 		}
-		if (totdropped - lastdropped > 0) {
-			fprintf(stdout, "[%s] warning: dropped %zd metrics\n",
-					fmtnow(nowbuf), totdropped - lastdropped);
-			fflush(stdout);
-		}
+		if (totdropped - lastdropped > 0)
+			logout("warning: dropped %zd metrics\n", totdropped - lastdropped);
 		lastdropped = totdropped;
 		if (numaggregators > 0) {
 			totdropped = aggregator_get_dropped();
-			if (totdropped - lastaggrdropped > 0) {
-				fprintf(stdout, "[%s] warning: aggregator dropped %zd metrics\n",
-						fmtnow(nowbuf), totdropped - lastaggrdropped);
-				fflush(stdout);
-			}
+			if (totdropped - lastaggrdropped > 0)
+				logout("warning: aggregator dropped %zd metrics\n",
+						totdropped - lastaggrdropped);
 			lastaggrdropped = totdropped;
 		}
 
@@ -247,23 +267,44 @@ collector_writer(void *unused)
 }
 
 /**
+ * Schedules routes r to be put in place for the current routes.  The
+ * replacement is performed at the next cycle of the collector.
+ */
+inline void
+collector_schedulereload(cluster *c)
+{
+	pending_clusters = c;
+	cluster_refresh_pending = 1;
+}
+
+/**
+ * Returns true if the routes scheduled to be reloaded by a call to
+ * collector_schedulereload() have been activated.
+ */
+inline char
+collector_reloadcomplete(void)
+{
+	return cluster_refresh_pending == 0;
+}
+
+/**
  * Initialises and starts the collector.
  */
 void
-collector_start(dispatcher **d, server **s, server *submission)
+collector_start(dispatcher **d, cluster *c, server *submission)
 {
 	dispatchers = d;
-	servers = s;
+	collector_schedulereload(c);
 
 	if (mode == DEBUG)
 		debug = 1;
 
 	if (mode != SUBMISSION) {
 		if (pthread_create(&collectorid, NULL, collector_runner, submission) != 0)
-			fprintf(stderr, "failed to start collector!\n");
+			logerr("failed to start collector!\n");
 	} else {
 		if (pthread_create(&collectorid, NULL, collector_writer, NULL) != 0)
-			fprintf(stderr, "failed to start collector!\n");
+			logerr("failed to start collector!\n");
 	}
 }
 

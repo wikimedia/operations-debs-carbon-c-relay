@@ -1,5 +1,5 @@
 /*
- * Copyright 2013-2014 Fabian Groffen
+ * Copyright 2013-2015 Fabian Groffen
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@
 #ifndef HAVE_RELAY_H
 #define HAVE_RELAY_H 1
 
-#define VERSION "0.36"
+#define VERSION "0.39"
 
 #define METRIC_BUFSIZ 8192
 
@@ -29,6 +29,10 @@ typedef enum { CON_TCP, CON_UDP, CON_PIPE } serv_ctype;
 extern char relay_hostname[];
 extern enum rmode mode;
 
-char *fmtnow(char nowbuf[24]);
+enum logdst { LOGOUT, LOGERR };
+
+int relaylog(enum logdst dest, const char *fmt, ...);
+#define logout(args...) relaylog(LOGOUT, args)
+#define logerr(args...) relaylog(LOGERR, args)
 
 #endif

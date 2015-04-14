@@ -28,14 +28,28 @@ reading the data from incoming connections and passing them onto the
 right destination(s).  The route file supports two main constructs:
 clusters and matches.  The first define groups of hosts data metrics can
 be sent to, the latter define which metrics should be sent to which
-cluster.  Aggregation rules are seen as matches.  The syntax in this
-file is as follows:
+cluster.  Aggregation rules are seen as matches.
+
+For every metric received by the relay, cleansing is performed.  The
+following changes are performed before any match, aggregate or rewrite
+rule sees the metric:
+
+  - double dot elimination (necessary for correctly functioning
+    consistent hash routing)
+  - trailing/leading dot elimination
+  - whitespace normalisation (this mostly affects output of the relay
+    to other targets: metric, value and timestamp will be separated by
+    a single space only, ever)
+  - irregular char replacement with underscores (\_), currently
+    irregular is defined as not being in [0-9a-zA-Z-_:#].
+
+The route file syntax is as follows:
 
 ```
 # comments are allowed in any place and start with a hash (#)
 
 cluster <name>
-    <forward | any_of | <carbon_ch | fnv1a_ch> [replication <count>]>
+    <forward | any_of [useall] | failover | <carbon_ch | fnv1a_ch> [replication <count>]>
         <host[:port] [proto <udp | tcp>]> ...
     ;
 match <* | <expression>>
@@ -72,15 +86,25 @@ is not much useful in itself, but since any of the members can receive
 each metric, this means that when one of the members is unreachable, the
 other members will receive all of the metrics.  This can be useful when
 the cluster points to other relays.  The `any_of` router tries to send
-the same metrics to the same destination.  The `carbon_ch` cluster sends
-the metrics to the member that is responsible according to the
-consistent hash algorithm (as used in the original carbon), or multiple
-members if replication is set to more than 1.  The `fnv1a_ch` cluster is
-a identical in behaviour to `carbon_ch`, but it uses a different hash
-technique (FNV1a) which is faster but more importantly defined to get by
-a limitation of `carbon_ch` to use both host and port from the members.
-This is useful when multiple targets live on the same host just separated
-by port.
+the same metrics consistently to the same destination.  The `failover`
+cluster is like the `any_of` cluster, but sticks to the order in which
+servers are defined.  This is to implement a pure failover scenario
+between servers.  The `carbon_ch` cluster sends the metrics to the
+member that is responsible according to the consistent hash algorithm
+(as used in the original carbon), or multiple members if replication is
+set to more than 1.  The `fnv1a_ch` cluster is a identical in behaviour
+to `carbon_ch`, but it uses a different hash technique (FNV1a) which is
+faster but more importantly defined to get by a limitation of
+`carbon_ch` to use both host and port from the members.  This is useful
+when multiple targets live on the same host just separated by port.  The
+instance that original carbon uses to get around this can be set by
+appending it after the port, separated by an equals sign, e.g.
+`127.0.0.1:2006=a` for instance `a`.
+
+DNS hostnames are resolved to a single address, according to the preference
+rules in [RFC 3484](https://www.ietf.org/rfc/rfc3484.txt).  The `any_of`
+cluster has an explicit `usedns` flag that enables a hostname to resolve to
+multiple addresses.  Each address returned becomes a cluster destination.
 
 Match rules are the way to direct incoming metrics to one or more
 clusters.  Match rules are processed top to bottom as they are defined
@@ -124,9 +148,11 @@ time in seconds defines when the aggregations should be considered
 final, as no new entries are allowed to be added any more.  On top of an
 aggregation multiple aggregations can be computed.  They can be of the
 same or different aggregation types, but should write to a unique new
-metric.  Produced metrics are sent to the relay as if they were
-submitted from the outside, hence match and aggregation rules apply to
-those.  Care should be taken that loops are avoided.  Also, since
+metric.  The metric names can include back references like in rewrite
+expressions, allowing for powerful single aggregation rules that yield
+in many aggregations.  Produced metrics are sent to the relay as if they
+were submitted from the outside, hence match and aggregation rules apply
+to those.  Care should be taken that loops are avoided.  Also, since
 aggregations appear as matches without `stop` keyword, their positioning
 matters in the same way ordering of match statements.
 
@@ -174,9 +200,9 @@ different from the two consistent hash cluster types:
 
     cluster graphite
         carbon_ch
-            10.1.0.1
-            10.1.0.2
-            10.1.0.3
+            127.0.0.1:2006=a
+            127.0.0.1:2007=b
+            127.0.0.1:2008=c
         ;
 
 If a member in this example fails, all metrics that would go to that
@@ -186,8 +212,8 @@ metric ends up on the same server always.  The `carbon_ch` cluster type
 is compatible with carbon-relay consistent hash, and can be used for
 existing clusters populated by carbon-relay.  For new clusters, however,
 it is better to use the `fnv1a_ch` cluster type, for it is faster, and
-allows to balance over the same address but different ports, unlike
-`carbon_ch`.
+allows to balance over the same address but different ports without an
+instance number, unlike `carbon_ch`.
 
 Because we can use multiple clusters, we can also replicate without the
 use of the `forward` cluster type, in a more intelligent way:
@@ -313,8 +339,8 @@ writing, it is not possible to have dynamically generated aggregates,
 e.g. for each hostname encountered.  A typical aggregation looks like:
 
     aggregate
-            sys.dc1.somehost-[0-9]+.somecluster.mysql.replication_delay
-            sys.dc2.somehost-[0-9]+.somecluster.mysql.replication_delay
+            ^sys\.dc1\.somehost-[0-9]+\.somecluster\.mysql\.replication_delay
+            ^sys\.dc2\.somehost-[0-9]+\.somecluster\.mysql\.replication_delay
         every 10 seconds
         expire after 35 seconds
         compute sum write to
@@ -349,6 +375,31 @@ output of the aggregator.  It is important to avoid loops, that can be
 generated this way.  In general, splitting aggregations to their own
 carbon-c-relay instance, such that it is easy to forward the produced
 metrics to another relay instance is a good practice.
+
+The previous example could also be written as follows to be more
+dynamic:
+
+    aggregate
+            ^sys\.dc[0-9].(somehost-[0-9]+)\.([^.]+)\.mysql\.replication_delay
+        every 10 seconds
+        expire after 35 seconds
+        compute sum write to
+            mysql.host.\1.replication_delay
+        compute sum write to
+            mysql.host.all.replication_delay
+        compute sum write to
+            mysql.cluster.\2.replication_delay
+        compute sum write to
+            mysql.cluster.all.replication_delay
+        ;
+
+Here a single match, results in four aggregations, each of a different
+scope.  In this example aggregation based on hostname and cluster are
+being made, as well as the more general `all` targets, which in this
+example have both identical values.  Note that with this single
+aggregation rule, both per-cluster, per-host and total aggregations are
+produced.  Obviously, the input metrics define which hosts and clusters
+are produced.
 
 
 Author
